@@ -3,7 +3,7 @@ import http from "http";
 
 import config from "./config.js";
 import firebase from './firebase.js';
-import { collection, updateDoc, getDoc, setDoc, doc, arrayUnion } from "firebase/firestore";
+import { collection, updateDoc, getDoc, setDoc, doc, arrayUnion, deleteDoc } from "firebase/firestore";
 
 const app = express();
 const port = config.port;
@@ -92,14 +92,46 @@ io.on("connection", (socket) => {
 
                 await updateDoc(roomRef, { players: arrayUnion(playerConverter.toFirestore(player2)), canJoin: false });
                 const roomSnap = await getDoc(roomRef);
+
                 room = roomSnap.data();
+
                 console.log("Joined Room " + roomId);
+                
                 io.to(roomId).emit("roomJoined", room);
+                io.to(roomId).emit("updatePlayers", room.players);
+                io.to(roomId).emit("updateRoom", room);
 
             } else {
                 socket.emit("errorOccurred", 'Game is in Progress.');
                 console.log("errorOccurred", 'Game is in Progress.', roomId);
             }
+        } catch (e) {
+            console.log(e);
+        }
+    });
+
+    socket.on('destroyRoom', async ({ nickname, roomId }) => {
+        try {
+            console.log("Destroying Room " + roomId);
+            if (!roomId.match(/^[0-9]{6}$/)) {
+                socket.emit('errorOccurred', 'Please Enter a Valid Room ID.');
+                console.log('errorOccurred:', 'Please Enter a Valid Room ID.', roomId)
+                return;
+            }
+            const roomRef = doc(firebase.firestore, 'rooms', roomId);
+            const roomSnap = await getDoc(roomRef);
+
+            if (!roomSnap.exists()) {
+                socket.emit('errorOccurred', 'Room does not exists.');
+                console.log('errorOccurred:', 'Room does not exists.', roomId);
+                return;
+            }
+
+            await deleteDoc(roomRef);
+
+            io.to(roomId).emit("leaveRoom", 'deleted');
+
+            
         } catch (e) {
             console.log(e);
         }
