@@ -1,9 +1,11 @@
 import express from "express";
 import http from "http";
+import fs from "fs";
 
 import config from "./config.js";
 import firebase from './firebase.js';
-import { collection, updateDoc, getDoc, setDoc, doc, arrayUnion, deleteDoc } from "firebase/firestore";
+import { collection, updateDoc, getDoc, setDoc, doc, arrayUnion, deleteDoc, increment } from "firebase/firestore";
+import { deleteObject, ref } from "firebase/storage";
 
 const app = express();
 const port = config.port;
@@ -13,18 +15,12 @@ var server = http.createServer(app);
 import { Server } from "socket.io";
 import { Room, roomConverter } from "./models/room.js";
 import { Player, playerConverter } from "./models/player.js";
+import { randomUUID } from "crypto";
+import { uploadBytes } from "firebase/storage";
 const io = new Server(server);
 
 // middle ware
 app.use(express.json());
-
-// firestore
-
-// const querySnapshot = await getDocs(collection(firebase.firestore, "rooms"));
-// querySnapshot.forEach((doc) => {
-//     console.log(`${doc.id} => ${doc.data()['player1']}`);
-// });
-
 
 io.on("connection", (socket) => {
     console.log("socket.io connected");
@@ -34,8 +30,7 @@ io.on("connection", (socket) => {
         // create a Room
         let room = new Room();
         let player = new Player(nickname, socket.id, 0, 0);
-        room.players = [];
-        room.players.push(player);
+        room.playerRoom = player;
 
         try {
 
@@ -87,18 +82,19 @@ io.on("connection", (socket) => {
                 let player2 = new Player(nickname, socket.id);
                 socket.join(roomId);
 
+                // Obselete
                 // room.players.push(player2);
                 // room.canJoin = false;
 
-                await updateDoc(roomRef, { players: arrayUnion(playerConverter.toFirestore(player2)), canJoin: false });
+                await updateDoc(roomRef, { playerOther: playerConverter.toFirestore(player2), canJoin: false });
                 const roomSnap = await getDoc(roomRef);
 
                 room = roomSnap.data();
 
                 console.log("Joined Room " + roomId);
-                
+
                 io.to(roomId).emit("roomJoined", room);
-                io.to(roomId).emit("updatePlayers", room.players);
+                io.to(roomId).emit("updatePlayers", [room.playerRoom, room.playerOther]);
                 io.to(roomId).emit("updateRoom", room);
 
             } else {
@@ -115,15 +111,26 @@ io.on("connection", (socket) => {
             console.log("Destroying Room " + roomId);
             if (!roomId.match(/^[0-9]{6}$/)) {
                 socket.emit('errorOccurred', 'Please Enter a Valid Room ID.');
-                console.log('errorOccurred:', 'Please Enter a Valid Room ID.', roomId)
+                console.log('errorOccurred:', 'Please Enter a Valid Room ID.', roomId);
+                io.to(roomId).emit("leaveRoom", 'deleted');
                 return;
             }
+
+            const imagesRef = ref(firebase.storage, `${roomId}/`);
+
+            deleteObject(imagesRef).then(() => {
+                console.log(`Delete all image files under ${roomId}/`);
+            }).catch((error) => {
+                console.log(`${error} deleting images`);
+            });
+
             const roomRef = doc(firebase.firestore, 'rooms', roomId);
             const roomSnap = await getDoc(roomRef);
 
             if (!roomSnap.exists()) {
                 socket.emit('errorOccurred', 'Room does not exists.');
                 console.log('errorOccurred:', 'Room does not exists.', roomId);
+                io.to(roomId).emit("leaveRoom", 'deleted');
                 return;
             }
 
@@ -131,10 +138,95 @@ io.on("connection", (socket) => {
 
             io.to(roomId).emit("leaveRoom", 'deleted');
 
-            
+
         } catch (e) {
             console.log(e);
         }
+    });
+
+    socket.on('startScan', async ({ environmentType, roomId }) => {
+        console.log("Starting Scan " + roomId);
+        if (!roomId.match(/^[0-9]{6}$/)) {
+            socket.emit('errorOccurred', 'Please Enter a Valid Room ID.');
+            console.log('errorOccurred:', 'Please Enter a Valid Room ID.', roomId)
+            return;
+        }
+        const roomRef = doc(firebase.firestore, 'rooms', roomId);
+        let roomSnap = await getDoc(roomRef);
+
+        if (!roomSnap.exists()) {
+            socket.emit('errorOccurred', 'Room does not exists.');
+            console.log('errorOccurred:', 'Room does not exists.', roomId);
+            return;
+        }
+
+        await updateDoc(roomRef, { gameStarted: true, environmentType: environmentType });
+        roomSnap = await getDoc(roomRef);
+
+        const room = roomSnap.data();
+
+        console.log("Started Scanning " + roomId);
+
+        io.to(roomId).emit("scanStarted", room);
+    });
+
+    socket.on('scanImage', async ({ image, roomId, didCreateRoom }) => {
+        console.log("Scanned Image " + roomId);
+        if (!roomId.match(/^[0-9]{6}$/)) {
+            socket.emit('errorOccurred', 'Please Enter a Valid Room ID.');
+            console.log('errorOccurred:', 'Please Enter a Valid Room ID.', roomId)
+            return;
+        }
+        const roomRef = doc(firebase.firestore, 'rooms', roomId);
+        let roomSnap = await getDoc(roomRef);
+
+        if (!roomSnap.exists()) {
+            socket.emit('errorOccurred', 'Room does not exists.');
+            console.log('errorOccurred:', 'Room does not exists.', roomId);
+            return;
+        }
+
+        console.log(socket.id);
+
+        if (didCreateRoom) {
+            await updateDoc(roomRef, { "playerRoom.imagesDone": increment(1) });
+        } else {
+            await updateDoc(roomRef, { "playerOther.imagesDone": increment(1) });
+        }
+
+        roomSnap = await getDoc(roomRef);
+        var room = roomSnap.data();
+
+        if (room.playerRoom.imagesDone === 5) {
+
+            if (room.playerOther.imagesDone === 5) {
+                await updateDoc(roomRef, { scanningFinished: true });
+            }
+            // socket.emit("finishedScan", room);
+
+        } else if (room.playerOther.imagesDone === 5) {
+
+            if (room.playerRoom.imagesDone == 5) {
+                await updateDoc(roomRef, { scanningFinished: true });
+            }
+            // socket.emit("finishedScan", room);
+        }
+
+        const imageRef = ref(firebase.storage, `${roomId}/${didCreateRoom ? 'playerRoom' : 'playerOther'}/${randomUUID()}.jpg`);
+        const metadata = {
+            contentType: 'image/jpeg',
+        };
+
+        uploadBytes(imageRef, image, metadata).then((snapshop) => {
+            console.log(snapshop);
+        });
+
+        roomSnap = await getDoc(roomRef);
+        room = roomSnap.data();
+
+        io.to(roomId).emit("scannedImage", { 'players': [room.playerRoom, room.playerOther], 'riddle': { 'item': 'Ball', 'riddle': 'I am A Ball2' } });
+
+        fs.writeFile("test.jpg", image, "binary", () => { });
     });
 });
 

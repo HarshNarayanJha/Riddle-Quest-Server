@@ -1,13 +1,14 @@
 import { playerConverter } from "./player.js";
 
 class Room {
-    constructor(id, occupancy = 2, players, canJoin = true, scanningFinished = false, gameStarted = false) {
+    constructor(id, playerRoom, playerOther, canJoin = true, gameStarted = false, environmentType = -1, scanningFinished = false) {
         this.id = id;
-        this.occupancy = occupancy;
-        this.players = players;
+        this.playerRoom = playerRoom;
+        this.playerOther = playerOther;
         this.canJoin = canJoin;
-        this.scanningFinished = scanningFinished;
         this.gameStarted = gameStarted;
+        this.environmentType = environmentType;
+        this.scanningFinished = scanningFinished;
     }
 }
 
@@ -15,16 +16,17 @@ const roomConverter = {
     toFirestore: (room) => {
         return {
             id: room.id,
-            occupancy: room.occupancy,
-            players: room.players.map(p => playerConverter.toFirestore(p)),
+            playerRoom: playerConverter.toFirestore(room.playerRoom),
+            playerOther: (room.playerOther != null) ? playerConverter.toFirestore(room.playerOther) : null,
             canJoin: room.canJoin,
-            scanningFinished: room.scanningFinished,
             gameStarted: room.gameStarted,
+            environmentType: room.environmentType,
+            scanningFinished: room.scanningFinished,
         };
     },
     fromFirestore: (snapshot, options) => {
         const data = snapshot.data(options);
-        return new Room(data.id, data.occupancy, data.players, data.canJoin, data.scanningFinished, data.gameStarted);
+        return new Room(data.id, data.playerRoom, data.playerOther, data.canJoin, data.gameStarted, data.environmentType, data.scanningFinished);
     }
 };
 
