@@ -4,8 +4,9 @@ import fs from "fs";
 
 import config from "./config.js";
 import firebase from './firebase.js';
+import gemini from './gemini.js';
 import { collection, updateDoc, getDoc, setDoc, doc, arrayUnion, deleteDoc, increment } from "firebase/firestore";
-import { deleteObject, ref } from "firebase/storage";
+import { deleteObject, ref, uploadBytes } from "firebase/storage";
 
 const app = express();
 const port = config.port;
@@ -16,14 +17,13 @@ import { Server } from "socket.io";
 import { Room, roomConverter } from "./models/room.js";
 import { Player, playerConverter } from "./models/player.js";
 import { randomUUID } from "crypto";
-import { uploadBytes } from "firebase/storage";
 const io = new Server(server);
 
 // middle ware
 app.use(express.json());
 
 io.on("connection", (socket) => {
-    console.log("socket.io connected");
+    console.log("socket.io connected to " + socket.id);
 
     socket.on("createRoom", async ({ nickname }) => {
         console.log(nickname);
@@ -121,7 +121,7 @@ io.on("connection", (socket) => {
             deleteObject(imagesRef).then(() => {
                 console.log(`Delete all image files under ${roomId}/`);
             }).catch((error) => {
-                console.log(`${error} deleting images`);
+                console.log(`${error} in deleting images`);
             });
 
             const roomRef = doc(firebase.firestore, 'rooms', roomId);
@@ -212,21 +212,42 @@ io.on("connection", (socket) => {
             // socket.emit("finishedScan", room);
         }
 
-        const imageRef = ref(firebase.storage, `${roomId}/${didCreateRoom ? 'playerRoom' : 'playerOther'}/${randomUUID()}.jpg`);
-        const metadata = {
-            contentType: 'image/jpeg',
+        // const imageRef = ref(firebase.storage, `${roomId}/${didCreateRoom ? 'playerRoom' : 'playerOther'}/${randomUUID()}.jpg`);
+        // const metadata = {
+        //     contentType: 'image/jpeg',
+        // };
+
+        // uploadBytes(imageRef, image, metadata).then((snapshop) => {
+        //     console.log(snapshop);
+        // });
+
+        // const uploadResult = await gemini.fileManager.uploadFile("image.jpg", {
+        //     mimeType: "image/jpeg",
+        //     displayName: "Sample drawing",
+        // });
+
+
+        const prompt = config.generator_prompt;
+        const imageData = {
+            inlineData: {
+                data: Buffer.from(image).toString("base64"),
+                mimeType: "image/jepg",
+            },
         };
 
-        uploadBytes(imageRef, image, metadata).then((snapshop) => {
-            console.log(snapshop);
-        });
+        const result = await gemini.model.generateContent([imageData, prompt]);
+        console.log(result.response.text());
+
+        const data = JSON.parse(result.response.text().replace("```json", '').replace("```", ''));
 
         roomSnap = await getDoc(roomRef);
         room = roomSnap.data();
 
-        io.to(roomId).emit("scannedImage", { 'players': [room.playerRoom, room.playerOther], 'riddle': { 'item': 'Ball', 'riddle': 'I am A Ball2' } });
+        console.log("Emitting with data");
 
-        fs.writeFile("test.jpg", image, "binary", () => { });
+        socket.emit("scannedImage", { 'players': [room.playerRoom, room.playerOther], 'riddle': { 'item': data['item'], 'riddle': data['riddle'] } });
+
+        // fs.writeFile("test.jpg", image, "binary", () => { });
     });
 });
 
